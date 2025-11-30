@@ -80,7 +80,10 @@ async function renderPdfToImages(pdfUrl, scale = 1.3) {
 
 async function initFlipbook() {
   // PDF bạn đã để trong thư mục public: /public/business-test.pdf
-  const pdfUrl = "/business-test.pdf";
+  const pdfUrl = new URL(
+    `${import.meta.env.BASE_URL}business-test.pdf`,
+    window.location.origin
+  ).href;
 
   // 1) Render PDF -> ảnh
   const { images, baseWidth, baseHeight } = await renderPdfToImages(
