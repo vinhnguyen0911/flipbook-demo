@@ -23,10 +23,15 @@ app.innerHTML = `
     <button class="toolbar-btn" id="btn-next">
       <span class="icon">▶</span>
     </button>
+    <button class="toolbar-btn" id="btn-zoom">
+      <span class="icon">🔍</span>
+    </button>
   </div>
 
   <div class="flipbook-wrapper">
-    <div id="book"></div>
+    <div class="zoom-container">
+      <div id="book"></div>
+    </div>
 
     <!-- Dải dọc điều hướng 2 bên -->
     <div class="page-edge left-edge" id="edge-left">
@@ -79,7 +84,7 @@ async function renderPdfToImages(pdfUrl, scale = 1.3) {
 }
 
 async function initFlipbook() {
-  // PDF bạn đã để trong thư mục public: /public/business-test.pdf
+  // PDF trong /public
   const pdfUrl = new URL(
     `${import.meta.env.BASE_URL}business-test.pdf`,
     window.location.origin
@@ -93,6 +98,8 @@ async function initFlipbook() {
 
   // 2) Khởi tạo PageFlip
   const bookElement = document.getElementById("book");
+  const wrapper = document.querySelector(".flipbook-wrapper");
+  const zoomContainer = document.querySelector(".zoom-container");
 
   const pageFlip = new PageFlip(bookElement, {
     width: baseWidth,
@@ -114,10 +121,11 @@ async function initFlipbook() {
   // 3) Load từ ảnh
   pageFlip.loadFromImages(images);
 
-  // ===== Gán sự kiện cho toolbar =====
+  // ===== Toolbar =====
   const btnFirst = document.getElementById("btn-first");
   const btnPrev = document.getElementById("btn-prev");
   const btnNext = document.getElementById("btn-next");
+  const btnZoom = document.getElementById("btn-zoom");
 
   btnFirst.addEventListener("click", () => {
     pageFlip.turnToPage(0);
@@ -131,7 +139,7 @@ async function initFlipbook() {
     pageFlip.flipNext("bottom");
   });
 
-  // ===== Gán sự kiện cho dải dọc 2 bên =====
+  // ===== Dải dọc 2 bên =====
   const edgeLeft = document.getElementById("edge-left");
   const edgeRight = document.getElementById("edge-right");
 
@@ -143,7 +151,174 @@ async function initFlipbook() {
     pageFlip.flipNext("bottom");
   });
 
-  // (Tùy chọn) disable nút khi tới đầu/cuối
+  // ===== Zoom state =====
+  let zoom = 1; // 100%
+  const MIN_ZOOM = 1;
+  const MAX_ZOOM = 3; // ⭐ đổi lên 3x
+  const ZOOM_STEP = 0.1;
+
+  function applyZoom() {
+    if (zoom < MIN_ZOOM) zoom = MIN_ZOOM;
+    if (zoom > MAX_ZOOM) zoom = MAX_ZOOM;
+
+    zoomContainer.style.width = `${zoom * 100}%`;
+    zoomContainer.style.height = `${zoom * 100}%`;
+
+    if (zoom > 1) {
+      wrapper.classList.add("zoomed");
+    } else {
+      wrapper.classList.remove("zoomed");
+      wrapper.scrollLeft = 0;
+      wrapper.scrollTop = 0;
+      zoomContainer.style.width = "100%";
+      zoomContainer.style.height = "100%";
+    }
+
+    setTimeout(() => {
+      window.dispatchEvent(new Event("resize"));
+    }, 50);
+  }
+
+  /**
+   * Zoom tới một mức `targetZoom`.
+   * Nếu có `event`, zoom quanh vùng click;
+   * nếu không, zoom quanh center viewport.
+   */
+  function zoomTo(targetZoom, event) {
+    if (targetZoom < MIN_ZOOM) targetZoom = MIN_ZOOM;
+    if (targetZoom > MAX_ZOOM) targetZoom = MAX_ZOOM;
+
+    const rect = wrapper.getBoundingClientRect();
+
+    // Tính tỷ lệ vị trí (ratioX/Y) trên toàn bộ nội dung trước khi zoom
+    const beforeScrollWidth = wrapper.scrollWidth || rect.width;
+    const beforeScrollHeight = wrapper.scrollHeight || rect.height;
+
+    let ratioX = 0.5;
+    let ratioY = 0.5;
+
+    if (event) {
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      const contentX = wrapper.scrollLeft + x;
+      const contentY = wrapper.scrollTop + y;
+
+      ratioX = contentX / beforeScrollWidth;
+      ratioY = contentY / beforeScrollHeight;
+    } else {
+      const centerX = wrapper.scrollLeft + rect.width / 2;
+      const centerY = wrapper.scrollTop + rect.height / 2;
+
+      ratioX = centerX / beforeScrollWidth;
+      ratioY = centerY / beforeScrollHeight;
+    }
+
+    zoom = targetZoom;
+    applyZoom();
+
+    // Sau khi zoom, cập nhật scroll sao cho vùng đó gần center
+    const afterScrollWidth = wrapper.scrollWidth || rect.width;
+    const afterScrollHeight = wrapper.scrollHeight || rect.height;
+
+    wrapper.scrollLeft = ratioX * afterScrollWidth - rect.width / 2;
+    wrapper.scrollTop = ratioY * afterScrollHeight - rect.height / 2;
+  }
+
+  // Zoom bằng scroll chuột
+  wrapper.addEventListener(
+    "wheel",
+    (event) => {
+      event.preventDefault();
+
+      if (event.deltaY < 0) {
+        zoom += ZOOM_STEP;
+      } else {
+        zoom -= ZOOM_STEP;
+      }
+
+      applyZoom();
+    },
+    { passive: false }
+  );
+
+  // Nút Zoom: zoom 2x quanh center (double click để thoát)
+  btnZoom.addEventListener("click", () => {
+    if (zoom === 1) {
+      zoomTo(2, null); // zoom 2x quanh center
+    } else {
+      // optional: click lần nữa thoát zoom
+      zoom = 1;
+      applyZoom();
+    }
+  });
+
+  // ===== Drag-to-pan khi đang zoom (scrollLeft/Top) =====
+  let isDragging = false;
+  let startX = 0;
+  let startY = 0;
+  let startScrollLeft = 0;
+  let startScrollTop = 0;
+
+  // Bắt đầu kéo (capture để chặn PageFlip lật trang)
+  wrapper.addEventListener(
+    "mousedown",
+    (e) => {
+      if (zoom <= 1) return; // chỉ drag khi zoom
+      if (e.button !== 0) return; // chỉ chuột trái
+      if (e.target.closest(".page-edge")) return; // edge vẫn lật trang
+
+      isDragging = true;
+      wrapper.classList.add("dragging");
+      startX = e.clientX;
+      startY = e.clientY;
+      startScrollLeft = wrapper.scrollLeft;
+      startScrollTop = wrapper.scrollTop;
+
+      e.preventDefault();
+      e.stopPropagation();
+    },
+    true // capture
+  );
+
+  wrapper.addEventListener("mousemove", (e) => {
+    if (!isDragging) return;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+
+    wrapper.scrollLeft = startScrollLeft - dx;
+    wrapper.scrollTop = startScrollTop - dy;
+  });
+
+  ["mouseup", "mouseleave"].forEach((evt) => {
+    wrapper.addEventListener(evt, () => {
+      isDragging = false;
+      wrapper.classList.remove("dragging");
+    });
+  });
+
+  // Chặn click lật trang khi đang zoom
+  bookElement.addEventListener("click", (e) => {
+    if (zoom > 1) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  });
+
+  // Double click:
+  // - Nếu đang zoom: thoát zoom
+  // - Nếu chưa zoom: zoom 2x quanh vùng click
+  bookElement.addEventListener("dblclick", (e) => {
+    if (zoom > 1) {
+      zoom = 1;
+      applyZoom();
+    } else {
+      zoomTo(2, e);
+    }
+    e.stopPropagation();
+    e.preventDefault();
+  });
+
+  // ===== Disable nút khi ở đầu/cuối =====
   const updateButtons = () => {
     const current = pageFlip.getCurrentPageIndex();
     const total = pageFlip.getPageCount();
