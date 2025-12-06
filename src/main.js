@@ -311,11 +311,9 @@ async function initFlipbook() {
     if (zoom > 1) {
       zoom = 1;
       applyZoom();
-    } else {
-      zoomTo(2, e);
+      e.stopPropagation();
+      e.preventDefault();
     }
-    e.stopPropagation();
-    e.preventDefault();
   });
 
   // ===== Disable nút khi ở đầu/cuối =====
