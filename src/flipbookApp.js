@@ -39,7 +39,7 @@ export async function initFlipbookApp(pdfUrl) {
     minHeight: 400,
     maxHeight: 1000,
     drawShadow: true,
-    flippingTime: 800,
+    flippingTime: 500,
     usePortrait: true,
     autoSize: true,
     maxShadowOpacity: 0.6,
