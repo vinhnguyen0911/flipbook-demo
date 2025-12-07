@@ -2,13 +2,6 @@
 import { PageFlip } from "page-flip";
 import { loadPdf, renderPdfPages } from "./pdfService";
 
-/**
- * Khởi tạo flipbook:
- *  - Render 4 trang đầu → hiển thị ngay sau khi xong
- *  - Hiện spinner trong lúc render
- *  - Preload các trang còn lại ở background
- *  - Giữ nguyên zoom / drag / dblclick
- */
 export async function initFlipbookApp(pdfUrl) {
   const bookElement = document.getElementById("book");
   const wrapper = document.querySelector(".flipbook-wrapper");
@@ -23,8 +16,8 @@ export async function initFlipbookApp(pdfUrl) {
   const pdf = await loadPdf(pdfUrl);
   const totalPages = pdf.numPages;
 
-  // 2) Render 4 trang đầu — đủ để flipbook chạy mượt
-  const INITIAL_PAGES = Math.min(4, totalPages);
+  // -------- Phase 1: RENDER 8 TRANG ĐẦU --------
+  const INITIAL_PAGES = Math.min(8, totalPages);
   const RENDER_SCALE = 1.0;
 
   const {
@@ -33,10 +26,10 @@ export async function initFlipbookApp(pdfUrl) {
     baseHeight,
   } = await renderPdfPages(pdf, 1, INITIAL_PAGES, RENDER_SCALE);
 
-  // Mảng ảnh dùng cho PageFlip
-  const allImages = [...firstImages];
+  // Danh sách ảnh đầy đủ (sẽ được append khi tải trang sau)
+  let allImages = [...firstImages];
 
-  // 3) Init PageFlip
+  // -------- Init PageFlip ngay sau khi có 8 trang đầu --------
   const pageFlip = new PageFlip(bookElement, {
     width: baseWidth,
     height: baseHeight,
@@ -52,27 +45,26 @@ export async function initFlipbookApp(pdfUrl) {
     maxShadowOpacity: 0.6,
     showCover: true,
     mobileScrollSupport: true,
-    disableFlipByClick: false, // click để lật khi không zoom
+    disableFlipByClick: false,
   });
 
-  // Load flipbook bằng 4 trang đầu
   pageFlip.loadFromImages(allImages);
 
-  // ================== PRELOAD ==================
+  // ================== Phase 2: PRELOAD BACKGROUND ==================
   let preloadBuffer = [];
   let isUserFlipping = false;
   let updateScheduled = false;
 
-  // Khi user flip → đánh dấu đang flip
+  // Khi user đang flip thì không update
   pageFlip.on("flip", () => {
     isUserFlipping = true;
+
     setTimeout(() => {
       isUserFlipping = false;
       maybeUpdateFromBuffer();
     }, 300);
   });
 
-  // gom update vào 1 lần khi idle
   function maybeUpdateFromBuffer() {
     if (isUserFlipping) return;
     if (updateScheduled) return;
@@ -81,11 +73,14 @@ export async function initFlipbookApp(pdfUrl) {
     updateScheduled = true;
 
     setTimeout(() => {
-      allImages.push(...preloadBuffer);
+      allImages = [...allImages, ...preloadBuffer];
       preloadBuffer = [];
+
+      // Cập nhật flipbook khi ổn định (không flash)
       pageFlip.updateFromImages(allImages);
+
       updateScheduled = false;
-    }, 250);
+    }, 220);
   }
 
   async function preloadRemainingPages() {
@@ -99,6 +94,7 @@ export async function initFlipbookApp(pdfUrl) {
           pageNum,
           RENDER_SCALE
         );
+
         preloadBuffer.push(images[0]);
         maybeUpdateFromBuffer();
       } catch (err) {
@@ -107,9 +103,10 @@ export async function initFlipbookApp(pdfUrl) {
     }
   }
 
+  // Bắt đầu preload background
   preloadRemainingPages();
 
-  // =============== TOOLBAR & EDGE ===============
+  // ================== TOOLBAR & EDGE ==================
   const btnFirst = document.getElementById("btn-first");
   const btnPrev = document.getElementById("btn-prev");
   const btnNext = document.getElementById("btn-next");
@@ -121,11 +118,10 @@ export async function initFlipbookApp(pdfUrl) {
 
   const edgeLeft = document.getElementById("edge-left");
   const edgeRight = document.getElementById("edge-right");
-
   edgeLeft?.addEventListener("click", () => pageFlip.flipPrev("bottom"));
   edgeRight?.addEventListener("click", () => pageFlip.flipNext("bottom"));
 
-  // =============== ZOOM ===============
+  // ================== ZOOM ==================
   let zoom = 1;
   const MIN_ZOOM = 1;
   const MAX_ZOOM = 3;
@@ -138,16 +134,13 @@ export async function initFlipbookApp(pdfUrl) {
     zoomContainer.style.height = `${zoom * 100}%`;
 
     if (zoom > 1) wrapper.classList.add("zoomed");
-    else wrapper.classList.remove("zoomed");
-
-    if (zoom === 1) {
+    else {
+      wrapper.classList.remove("zoomed");
       wrapper.scrollLeft = 0;
       wrapper.scrollTop = 0;
       zoomContainer.style.width = "100%";
       zoomContainer.style.height = "100%";
     }
-
-    setTimeout(() => window.dispatchEvent(new Event("resize")), 30);
   }
 
   wrapper.addEventListener(
@@ -173,7 +166,7 @@ export async function initFlipbookApp(pdfUrl) {
     }
   });
 
-  // =============== DRAG ===============
+  // ================== DRAG ==================
   let isDragging = false;
   let startX, startY, startScrollLeft, startScrollTop;
 
@@ -209,7 +202,7 @@ export async function initFlipbookApp(pdfUrl) {
     })
   );
 
-  // =============== DOUBLE CLICK EXIT ZOOM ===============
+  // ================== DOUBLE CLICK EXIT ZOOM ==================
   bookElement.addEventListener("dblclick", (e) => {
     if (zoom > 1) {
       zoom = 1;
@@ -219,20 +212,16 @@ export async function initFlipbookApp(pdfUrl) {
     }
   });
 
-  // =============== CẬP NHẬT NÚT ===============
+  // ================== UPDATE BUTTONS ==================
   function updateButtons() {
     const curr = pageFlip.getCurrentPageIndex();
     const total = pageFlip.getPageCount();
 
-    const atFirst = curr === 0;
-    const atLast = curr === total - 1;
-
-    if (btnFirst) btnFirst.disabled = atFirst;
-    if (btnPrev) btnPrev.disabled = atFirst;
-    if (btnNext) btnNext.disabled = atLast;
+    btnFirst.disabled = curr === 0;
+    btnPrev.disabled = curr === 0;
+    btnNext.disabled = curr === total - 1;
 
     [btnFirst, btnPrev, btnNext].forEach((btn) => {
-      if (!btn) return;
       btn.style.opacity = btn.disabled ? "0.4" : "1";
       btn.style.cursor = btn.disabled ? "default" : "pointer";
     });
