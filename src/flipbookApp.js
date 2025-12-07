@@ -1,12 +1,13 @@
 // src/flipbookApp.js
 import { PageFlip } from "page-flip";
-import { renderPdfToImages } from "./pdfService";
+import { loadPdf, renderPdfPages } from "./pdfService";
 
 /**
- * Khởi tạo flipbook app:
- * - load PDF -> ảnh
- * - PageFlip
- * - toolbar, edge, zoom, drag, dblclick
+ * Khởi tạo flipbook:
+ *  - Render 4 trang đầu → hiển thị ngay sau khi xong
+ *  - Hiện spinner trong lúc render
+ *  - Preload các trang còn lại ở background
+ *  - Giữ nguyên zoom / drag / dblclick
  */
 export async function initFlipbookApp(pdfUrl) {
   const bookElement = document.getElementById("book");
@@ -14,17 +15,28 @@ export async function initFlipbookApp(pdfUrl) {
   const zoomContainer = document.querySelector(".zoom-container");
 
   if (!bookElement || !wrapper || !zoomContainer) {
-    console.error("Không tìm thấy phần tử flipbook cần thiết.");
+    console.error("Không đủ phần tử để tạo flipbook");
     return;
   }
 
-  // 1) Render PDF -> images
-  const { images, baseWidth, baseHeight } = await renderPdfToImages(
-    pdfUrl,
-    1.3
-  );
+  // 1) Load PDF
+  const pdf = await loadPdf(pdfUrl);
+  const totalPages = pdf.numPages;
 
-  // 2) Init PageFlip
+  // 2) Render 4 trang đầu — đủ để flipbook chạy mượt
+  const INITIAL_PAGES = Math.min(4, totalPages);
+  const RENDER_SCALE = 1.0;
+
+  const {
+    images: firstImages,
+    baseWidth,
+    baseHeight,
+  } = await renderPdfPages(pdf, 1, INITIAL_PAGES, RENDER_SCALE);
+
+  // Mảng ảnh dùng cho PageFlip
+  const allImages = [...firstImages];
+
+  // 3) Init PageFlip
   const pageFlip = new PageFlip(bookElement, {
     width: baseWidth,
     height: baseHeight,
@@ -40,11 +52,64 @@ export async function initFlipbookApp(pdfUrl) {
     maxShadowOpacity: 0.6,
     showCover: true,
     mobileScrollSupport: true,
+    disableFlipByClick: false, // click để lật khi không zoom
   });
 
-  pageFlip.loadFromImages(images);
+  // Load flipbook bằng 4 trang đầu
+  pageFlip.loadFromImages(allImages);
 
-  // --- Toolbar & edge controls ---
+  // ================== PRELOAD ==================
+  let preloadBuffer = [];
+  let isUserFlipping = false;
+  let updateScheduled = false;
+
+  // Khi user flip → đánh dấu đang flip
+  pageFlip.on("flip", () => {
+    isUserFlipping = true;
+    setTimeout(() => {
+      isUserFlipping = false;
+      maybeUpdateFromBuffer();
+    }, 300);
+  });
+
+  // gom update vào 1 lần khi idle
+  function maybeUpdateFromBuffer() {
+    if (isUserFlipping) return;
+    if (updateScheduled) return;
+    if (preloadBuffer.length === 0) return;
+
+    updateScheduled = true;
+
+    setTimeout(() => {
+      allImages.push(...preloadBuffer);
+      preloadBuffer = [];
+      pageFlip.updateFromImages(allImages);
+      updateScheduled = false;
+    }, 250);
+  }
+
+  async function preloadRemainingPages() {
+    if (INITIAL_PAGES >= totalPages) return;
+
+    for (let pageNum = INITIAL_PAGES + 1; pageNum <= totalPages; pageNum++) {
+      try {
+        const { images } = await renderPdfPages(
+          pdf,
+          pageNum,
+          pageNum,
+          RENDER_SCALE
+        );
+        preloadBuffer.push(images[0]);
+        maybeUpdateFromBuffer();
+      } catch (err) {
+        console.error("Lỗi preload trang:", pageNum, err);
+      }
+    }
+  }
+
+  preloadRemainingPages();
+
+  // =============== TOOLBAR & EDGE ===============
   const btnFirst = document.getElementById("btn-first");
   const btnPrev = document.getElementById("btn-prev");
   const btnNext = document.getElementById("btn-next");
@@ -60,84 +125,63 @@ export async function initFlipbookApp(pdfUrl) {
   edgeLeft?.addEventListener("click", () => pageFlip.flipPrev("bottom"));
   edgeRight?.addEventListener("click", () => pageFlip.flipNext("bottom"));
 
-  // --- Zoom state ---
-  let zoom = 1; // 1x
+  // =============== ZOOM ===============
+  let zoom = 1;
   const MIN_ZOOM = 1;
   const MAX_ZOOM = 3;
   const ZOOM_STEP = 0.1;
 
   function applyZoom() {
-    if (zoom < MIN_ZOOM) zoom = MIN_ZOOM;
-    if (zoom > MAX_ZOOM) zoom = MAX_ZOOM;
+    zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
 
     zoomContainer.style.width = `${zoom * 100}%`;
     zoomContainer.style.height = `${zoom * 100}%`;
 
-    if (zoom > 1) {
-      wrapper.classList.add("zoomed");
-    } else {
-      wrapper.classList.remove("zoomed");
+    if (zoom > 1) wrapper.classList.add("zoomed");
+    else wrapper.classList.remove("zoomed");
+
+    if (zoom === 1) {
       wrapper.scrollLeft = 0;
       wrapper.scrollTop = 0;
       zoomContainer.style.width = "100%";
       zoomContainer.style.height = "100%";
     }
 
-    setTimeout(() => {
-      window.dispatchEvent(new Event("resize"));
-    }, 50);
+    setTimeout(() => window.dispatchEvent(new Event("resize")), 30);
   }
 
-  // Zoom bằng scroll (giữ behavior cũ)
   wrapper.addEventListener(
     "wheel",
-    (event) => {
-      event.preventDefault();
-
-      if (event.deltaY < 0) {
-        zoom += ZOOM_STEP;
-      } else {
-        zoom -= ZOOM_STEP;
-      }
-
+    (e) => {
+      e.preventDefault();
+      zoom += e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP;
       applyZoom();
     },
     { passive: false }
   );
 
-  // Zoom 2x quanh center bằng nút 🔍, click lại để reset
   btnZoom?.addEventListener("click", () => {
     if (zoom === 1) {
-      // zoom lên 2x và đưa viewport vào giữa nội dung
       zoom = 2;
       applyZoom();
-
       const rect = wrapper.getBoundingClientRect();
-      const totalW = wrapper.scrollWidth || rect.width;
-      const totalH = wrapper.scrollHeight || rect.height;
-
-      wrapper.scrollLeft = (totalW - rect.width) / 2;
-      wrapper.scrollTop = (totalH - rect.height) / 2;
+      wrapper.scrollLeft = (wrapper.scrollWidth - rect.width) / 2;
+      wrapper.scrollTop = (wrapper.scrollHeight - rect.height) / 2;
     } else {
       zoom = 1;
       applyZoom();
     }
   });
 
-  // --- Drag-to-pan khi zoom ---
+  // =============== DRAG ===============
   let isDragging = false;
-  let startX = 0;
-  let startY = 0;
-  let startScrollLeft = 0;
-  let startScrollTop = 0;
+  let startX, startY, startScrollLeft, startScrollTop;
 
-  // Bắt đầu kéo (capture để chặn lật trang)
   wrapper.addEventListener(
     "mousedown",
     (e) => {
-      if (zoom <= 1) return;
-      if (e.button !== 0) return;
-      if (e.target.closest(".page-edge")) return; // vẫn cho edge click lật
+      if (zoom <= 1 || e.button !== 0) return;
+      if (e.target.closest(".page-edge")) return;
 
       isDragging = true;
       wrapper.classList.add("dragging");
@@ -154,45 +198,34 @@ export async function initFlipbookApp(pdfUrl) {
 
   wrapper.addEventListener("mousemove", (e) => {
     if (!isDragging) return;
-    const dx = e.clientX - startX;
-    const dy = e.clientY - startY;
-
-    wrapper.scrollLeft = startScrollLeft - dx;
-    wrapper.scrollTop = startScrollTop - dy;
+    wrapper.scrollLeft = startScrollLeft - (e.clientX - startX);
+    wrapper.scrollTop = startScrollTop - (e.clientY - startY);
   });
 
-  ["mouseup", "mouseleave"].forEach((evt) => {
+  ["mouseup", "mouseleave"].forEach((evt) =>
     wrapper.addEventListener(evt, () => {
       isDragging = false;
       wrapper.classList.remove("dragging");
-    });
-  });
+    })
+  );
 
-  // Đang zoom thì click vào book không lật trang
-  bookElement.addEventListener("click", (e) => {
-    if (zoom > 1) {
-      e.stopPropagation();
-      e.preventDefault();
-    }
-  });
-
-  // Double-click: chỉ dùng để thoát zoom (bản bạn chọn)
+  // =============== DOUBLE CLICK EXIT ZOOM ===============
   bookElement.addEventListener("dblclick", (e) => {
     if (zoom > 1) {
       zoom = 1;
       applyZoom();
-      e.stopPropagation();
       e.preventDefault();
+      e.stopPropagation();
     }
   });
 
-  // --- Enable/disable nút khi đầu/cuối ---
-  const updateButtons = () => {
-    const current = pageFlip.getCurrentPageIndex();
+  // =============== CẬP NHẬT NÚT ===============
+  function updateButtons() {
+    const curr = pageFlip.getCurrentPageIndex();
     const total = pageFlip.getPageCount();
 
-    const atFirst = current === 0;
-    const atLast = current === total - 1;
+    const atFirst = curr === 0;
+    const atLast = curr === total - 1;
 
     if (btnFirst) btnFirst.disabled = atFirst;
     if (btnPrev) btnPrev.disabled = atFirst;
@@ -200,15 +233,10 @@ export async function initFlipbookApp(pdfUrl) {
 
     [btnFirst, btnPrev, btnNext].forEach((btn) => {
       if (!btn) return;
-      if (btn.disabled) {
-        btn.style.opacity = "0.4";
-        btn.style.cursor = "default";
-      } else {
-        btn.style.opacity = "1";
-        btn.style.cursor = "pointer";
-      }
+      btn.style.opacity = btn.disabled ? "0.4" : "1";
+      btn.style.cursor = btn.disabled ? "default" : "pointer";
     });
-  };
+  }
 
   updateButtons();
   pageFlip.on("flip", updateButtons);
