@@ -6,7 +6,7 @@ import { initFlipbookApp } from "./flipbookApp";
 
 // Tính URL PDF từ BASE_URL (dev & build đều chạy được)
 const pdfUrl = new URL(
-  `${import.meta.env.BASE_URL}magazine.pdf`,
+  `${import.meta.env.BASE_URL}CATALOGUE ABB RETAIL-2025.pdf`,
   window.location.origin
 ).href;
 
